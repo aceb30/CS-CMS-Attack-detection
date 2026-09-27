@@ -47,7 +47,7 @@ class CountSketch {
             hashed[j] = signHasher_.hash(x,j) * C_[j][hasher_.hash(x, j)];
         }
 
-        if (hashed.empty()) return long long(0);
+        if (hashed.empty()) return 0LL;
         
         std::sort(hashed.begin(), hashed.end());
 

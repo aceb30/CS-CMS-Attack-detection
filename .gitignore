@@ -1,0 +1,21 @@
+# Entornos virtuales de Python
+.venv/
+
+# Archivos de datos y trazas pesadas
+*.pcap.gz
+*.bin
+
+# Archivos de salida y resultados de experimentos
+*.csv
+
+# Binarios compilados en Linux (sin extensión)
+exact_hh
+pcap2bin
+sliding_window_estimator
+
+# Binarios de Windows
+*.exe
+
+# Caché de Jupyter y Python 
+.ipynb_checkpoints/
+__pycache__/
