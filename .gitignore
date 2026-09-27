@@ -7,6 +7,10 @@
 
 # Archivos de salida y resultados de experimentos
 *.csv
+gt_*.json
+
+# Figuras generadas
+figuras/
 
 # Binarios compilados en Linux (sin extensión)
 exact_hh
@@ -16,6 +20,5 @@ sliding_window_estimator
 # Binarios de Windows
 *.exe
 
-# Caché de Jupyter y Python 
+# Caché de Jupyter y Python
 .ipynb_checkpoints/
-__pycache__/
