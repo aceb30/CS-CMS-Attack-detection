@@ -71,7 +71,7 @@ inline uint64_t calcular_q(uint64_t ts, uint64_t t0, uint64_t p_us) {
  * Usando esta blueprint, podemos luego manejar cualquier tipo de sketch
 */
 template <typename SketchType>
-void run_sliding_window(const Record* trace, size_t n_packets, int d, int w, double phi, uint32_t target_ip, const std::string& key_type){
+void run_sliding_window(const Record* trace, size_t n_packets, int d, int w, double phi, uint32_t target_ip, const std::string& key_type, const std::string& mode){
   /*
   * Configuración temporal.
   * W_us corresponde a W = 60 segundos, en microsegundos, tamaño de la ventana
@@ -90,6 +90,10 @@ void run_sliding_window(const Record* trace, size_t n_packets, int d, int w, dou
   std::vector<SketchType> S(m, SketchType(d, w, 12345));
   SketchType A(d, w, 12345);
 
+  // Para 6.3 guardamos el agregado de la ventana anterior
+  SketchType A_prev(d, w, 12345);
+  bool has_prev = false;
+
   // Inicializar el anillo escalar de contadores
   std::vector<uint64_t> N_sub(m, 0);
   uint64_t N_total = 0;
@@ -97,7 +101,11 @@ void run_sliding_window(const Record* trace, size_t n_packets, int d, int w, dou
   size_t win_id = 0; // Puntero al paquete actual
 
   //CSV Header
-  printf("win,tau_us,N,threshold,key,f_est,is_hh\n");
+  if (mode == "delta") {
+      printf("win,tau_us,key,delta_est\n");
+  } else {
+      printf("win,tau_us,N,threshold,key,f_est,is_hh\n");
+  }
 
   // Ciclo principal
   for (size_t i = 0; i < n_packets; ++i) {
@@ -109,20 +117,43 @@ void run_sliding_window(const Record* trace, size_t n_packets, int d, int w, dou
 
       // Si cruzamos el límite, evaluamos y deslizamos
       while (ts > tau) {
-          uint64_t threshold = (uint64_t)std::ceil(phi * N_total);
-          /*
-          * Como caso límite, una ventana podría estar vacía, en cuyo caso Tj=0
-          * El problema es que si el treshold es 0, cualquier cosa sale como HH
-          * Así que forzamos al treshold a ser 1 por lo menos
-          */
-          if (threshold == 0) threshold = 1;
-          
-          //Estimación de frecuencia y determinación HH
-          long long f_est = A.estimar(target_ip);
-          int is_hh = (f_est >= threshold) ? 1 : 0;
-          
-          printf("%zu,%llu,%llu,%llu,%s,%lld,%d\n", 
-            win_id, (unsigned long long)tau, (unsigned long long)N_total, (unsigned long long)threshold, ip_to_string(target_ip).c_str(), f_est, is_hh);
+
+          // En modo delta estimamos el cambio entre dos ventanas consecutivas
+          if (mode == "delta") {
+
+              if (has_prev) {
+                  SketchType DeltaA = A;
+
+                  // DeltaA_j = A_j - A_{j-1}
+                  DeltaA.restar(A_prev);
+
+                  long long delta_est = DeltaA.estimar(target_ip);
+
+                  printf("%zu,%llu,%s,%lld\n",
+                    win_id, (unsigned long long)tau,
+                    ip_to_string(target_ip).c_str(), delta_est);
+              }
+
+              // Guardamos A_j para calcular el delta de la siguiente ventana
+              A_prev = A;
+              has_prev = true;
+
+          } else {
+              uint64_t threshold = (uint64_t)std::ceil(phi * N_total);
+              /*
+              * Como caso límite, una ventana podría estar vacía, en cuyo caso Tj=0
+              * El problema es que si el treshold es 0, cualquier cosa sale como HH
+              * Así que forzamos al treshold a ser 1 por lo menos
+              */
+              if (threshold == 0) threshold = 1;
+              
+              //Estimación de frecuencia y determinación HH
+              long long f_est = A.estimar(target_ip);
+              int is_hh = (f_est >= threshold) ? 1 : 0;
+              
+              printf("%zu,%llu,%llu,%llu,%s,%lld,%d\n", 
+                win_id, (unsigned long long)tau, (unsigned long long)N_total, (unsigned long long)threshold, ip_to_string(target_ip).c_str(), f_est, is_hh);
+          }
 
           /*
           * Deslizamiento
@@ -161,7 +192,7 @@ void run_sliding_window(const Record* trace, size_t n_packets, int d, int w, dou
 
 int main(int argc, char** argv) {
     if (argc < 7) {
-        fprintf(stderr, "Uso: %s TRAZA.bin ESTIMADOR(cm|cs) D W KEY_TYPE(src|dst) TARGET_IP\n", argv[0]);
+        fprintf(stderr, "Uso: %s TRAZA.bin ESTIMADOR(cm|cs|cmmed) D W KEY_TYPE(src|dst) TARGET_IP [MODO(freq|delta)]\n", argv[0]);
         return 1;
     }
 
@@ -174,6 +205,29 @@ int main(int argc, char** argv) {
     
     if (!parse_ipv4(argv[6], &target_ip)) {
         fprintf(stderr, "IP invalida.\n");
+        return 1;
+    }
+
+    // Por defecto mantenemos el comportamiento anterior de las partes 6.1 y 6.2
+    std::string mode = "freq";
+    if (argc >= 8) {
+        mode = argv[7];
+    }
+
+    if (mode != "freq" && mode != "delta") {
+        fprintf(stderr, "Modo desconocido. Use 'freq' o 'delta'.\n");
+        return 1;
+    }
+
+    // Para DeltaA no usamos el estimador mínimo de Count-Min
+    if (mode == "delta" && estimator == "cm") {
+        fprintf(stderr, "Para modo delta use 'cs' o 'cmmed'.\n");
+        return 1;
+    }
+
+    // CountMedian corresponde a CMS-mediana y se usa solamente en 6.3
+    if (mode == "freq" && estimator == "cmmed") {
+        fprintf(stderr, "El estimador 'cmmed' se utiliza solamente en modo delta.\n");
         return 1;
     }
 
@@ -196,11 +250,13 @@ int main(int argc, char** argv) {
 
     // Inyectar el sketch en la plantilla 
     if (estimator == "cm") {
-        run_sliding_window<CountMin>(trace, n_packets, d, w, phi, target_ip, key_type);
+        run_sliding_window<CountMin>(trace, n_packets, d, w, phi, target_ip, key_type, mode);
     } else if (estimator == "cs") {
-        run_sliding_window<CountSketch>(trace, n_packets, d, w, phi, target_ip, key_type);
+        run_sliding_window<CountSketch>(trace, n_packets, d, w, phi, target_ip, key_type, mode);
+    } else if (estimator == "cmmed") {
+        run_sliding_window<CountMedian>(trace, n_packets, d, w, phi, target_ip, key_type, mode);
     } else {
-        fprintf(stderr, "Estimador desconocido. Use 'cm' o 'cs'.\n");
+        fprintf(stderr, "Estimador desconocido. Use 'cm', 'cs' o 'cmmed'.\n");
     }
 
     //Fin de la lectura: Des-mapeo del archivo, se rompe el enlace de lectura
